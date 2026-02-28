@@ -1,97 +1,112 @@
 # Getting Started
 
-teleflow turns annotated Python dataclasses into fully interactive Telegram bot interfaces. You declare *what* your bot collects — teleflow generates the handlers, keyboards, pagination, and session management.
+teleflow turns Python dataclasses into Telegram bots. You annotate fields with widgets, and teleflow generates the handlers, keyboards, pagination, and session management. No manual callback routing, no state machines — just declare and derive.
 
-## Installation
+## Install
 
 ```bash
 uv add teleflow --git https://github.com/prostomarkeloff/teleflow
 ```
 
-Requires Python 3.14+. Depends on [emergent](https://github.com/prostomarkeloff/emergent) and [telegrinder](https://github.com/timoniq/telegrinder).
+Requires Python 3.14+. Pulls in [emergent](https://github.com/prostomarkeloff/emergent) and [telegrinder](https://github.com/timoniq/telegrinder) automatically.
 
-## Your first bot
+## Your first flow
 
-Every teleflow app starts with a `TGApp` — a coordinator that owns all your patterns and ensures commands don't collide.
+The simplest thing you can build is a **flow** — a multi-step conversation. The bot asks questions one by one, collects answers into a typed dataclass, and calls your `finish()` method.
 
 ```python
 from dataclasses import dataclass
 from typing import Annotated
 
 from kungfu import Ok, Result
+from telegrinder.node import UserId
 from derivelib import derive
 from derivelib._errors import DomainError
+
 from teleflow.app import TGApp
 from teleflow.flow import TextInput, Counter, FinishResult
 
-# 1. Create the app
 tg = TGApp(key_node=UserId)
 
-
-# 2. Declare a flow
-@derive(tg.flow("register", description="Sign up"))
+@derive(tg.flow("greet", description="Say hello"))
 @dataclass
-class Registration:
+class Greeting:
     name: Annotated[str, TextInput("What's your name?")]
     age: Annotated[int, Counter("How old are you?", min=1, max=120)]
 
     async def finish(self) -> Result[FinishResult, DomainError]:
-        return Ok(FinishResult.message(f"Welcome, {self.name}!"))
+        return Ok(FinishResult.message(f"Hello, {self.name}! {self.age} is a great age."))
 ```
 
-That's it. When a user sends `/register`, the bot walks them through two steps — a text prompt for `name` and a +/- counter for `age` — then calls `finish()`.
+When a user sends `/greet`, the bot sends "What's your name?" and waits. The user replies with text — that becomes `self.name`. Then the bot shows a `+`/`-` counter for age. After both fields are filled, `finish()` runs and sends back the message.
 
-## Compiling to a Dispatch
-
-teleflow patterns compile down to telegrinder `Dispatch` handlers through emergent's wire compiler:
-
-```python
-from emergent.wire.axis.surface._app import build_application_from_decorated
-from telegrinder import API, Telegrinder
-
-# Build the wire application from all @derive-decorated classes
-app = build_application_from_decorated(Registration)
-
-# Compile to telegrinder Dispatch
-dp = tg.compile(app)
-
-# Run the bot
-bot = Telegrinder(API(token="BOT_TOKEN"), dispatch=dp)
-bot.run_forever()
-```
+`TGApp` is the coordinator — it owns your patterns, ensures commands don't collide, and shares a theme and callback registry across everything.
 
 ## Adding a browse view
 
-Show your users a paginated list of entities:
+Flows collect data. **Browse** displays it. Here's a paginated list with action buttons:
 
 ```python
-from teleflow.browse import BrowseSource, query, action, ActionResult
+from emergent.wire.axis.schema import Identity
+from teleflow.browse import ListBrowseSource, BrowseSource, ActionResult, query, action, format_card
 
-@derive(tg.browse("tasks", description="My tasks"))
+@derive(tg.browse("items", page_size=3, description="View items"))
 @dataclass
-class TaskCard:
+class ItemCard:
     id: Annotated[int, Identity]
     title: str
     done: bool
 
     @classmethod
     @query
-    async def fetch(cls, db: TaskDB) -> BrowseSource[TaskCard]:
-        return ListBrowseSource(await db.all())
+    async def fetch(cls) -> BrowseSource[ItemCard]:
+        return ListBrowseSource([
+            ItemCard(1, "Write docs", False),
+            ItemCard(2, "Ship v1", False),
+        ])
+
+    @classmethod
+    @format_card
+    def render(cls, item: ItemCard) -> str:
+        icon = "done" if item.done else "todo"
+        return f"[{icon}] {item.title}"
 
     @classmethod
     @action("Complete")
-    async def complete(cls, entity: TaskCard, db: TaskDB) -> ActionResult:
-        await db.mark_done(entity.id)
-        return ActionResult.refresh("Done!")
+    async def complete(cls, item: ItemCard) -> ActionResult:
+        return ActionResult.refresh(f"Completed: {item.title}")
 ```
 
-`/tasks` shows a paginated card list with prev/next navigation and a "Complete" action button on each card.
+`/items` shows the first page of cards with prev/next buttons and a "Complete" action on each card. The `id` field annotated with `Identity` tells teleflow which field uniquely identifies each entity.
+
+## Compiling and running
+
+teleflow patterns don't directly create handlers. They describe an **application** — a portable representation that gets compiled to a specific runtime. For Telegram, that runtime is telegrinder:
+
+```python
+from derivelib import build_application_from_decorated
+from telegrinder import API, Telegrinder, Token
+from emergent.wire.compile.targets import telegrinder as tg_compile
+
+# Gather all @derive-decorated classes into a wire application
+app = build_application_from_decorated(Greeting, ItemCard)
+
+# Compile to telegrinder Dispatch
+dp = tg_compile.compile(app)
+
+# Run
+bot = Telegrinder(API(Token("YOUR_BOT_TOKEN")), dispatch=dp)
+bot.run_forever()
+```
+
+This two-step process (build application, then compile) is central to emergent's architecture. The application is target-agnostic — the same `@derive` declarations could compile to HTTP or CLI. For teleflow, the target is always telegrinder.
 
 ## What's next
 
-- [Flows & Widgets](flows.md) — all widget types, validation, dynamic options
-- [Browse, Dashboard & Search](views.md) — entity views in depth
-- [Settings](settings.md) — inline settings editing
-- [Flow Transforms](transforms.md) — cancel, back, progress, sub-flows
-- [Theming](theming.md) — customize every string and icon
+You've seen the two core patterns — flows that collect data and browse views that display it. teleflow has three more patterns (dashboard, settings, search) and a rich widget library. Keep reading:
+
+**Next: [Flows & Widgets](flows.md)** — the full widget catalog, validation, conditional fields, and custom widgets
+
+---
+
+[Docs index](readme.md)

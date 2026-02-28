@@ -44,6 +44,15 @@ uv add teleflow --git https://github.com/prostomarkeloff/teleflow
 
 Requires Python 3.14+.
 
+## Examples
+
+- **[quickstart.py](examples/quickstart.py)** — minimal bot in ~60 lines: one flow (pizza order) + one browse (order list)
+- **[casino.py](examples/casino.py)** — noir casino bot showcasing all patterns: dashboard (roulette), browse (missions), flow (cipher cracking), settings (player profile), methods (wallet/start)
+
+```bash
+BOT_TOKEN=... uv run python examples/quickstart.py
+```
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)

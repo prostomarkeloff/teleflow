@@ -1,6 +1,6 @@
 # Начало работы
 
-teleflow превращает аннотированные Python-датаклассы в полноценные интерактивные Telegram-интерфейсы. Вы описываете *что* собирает бот — teleflow генерирует обработчики, клавиатуры, пагинацию и управление сессиями.
+teleflow превращает Python-датаклассы в Telegram-ботов. Аннотируете поля виджетами, а teleflow генерирует обработчики, клавиатуры, пагинацию и управление сессиями. Никакого ручного роутинга колбэков, никаких стейт-машин — просто объявление и деривация.
 
 ## Установка
 
@@ -8,90 +8,105 @@ teleflow превращает аннотированные Python-датакла
 uv add teleflow --git https://github.com/prostomarkeloff/teleflow
 ```
 
-Требуется Python 3.14+. Зависит от [emergent](https://github.com/prostomarkeloff/emergent) и [telegrinder](https://github.com/timoniq/telegrinder).
+Требуется Python 3.14+. Автоматически подтягивает [emergent](https://github.com/prostomarkeloff/emergent) и [telegrinder](https://github.com/timoniq/telegrinder).
 
-## Первый бот
+## Первый flow
 
-Каждое teleflow-приложение начинается с `TGApp` — координатора, который владеет всеми паттернами и следит за уникальностью команд.
+Самое простое, что можно построить — это **flow**, многошаговый диалог. Бот задаёт вопросы по очереди, собирает ответы в типизированный датакласс и вызывает ваш метод `finish()`.
 
 ```python
 from dataclasses import dataclass
 from typing import Annotated
 
 from kungfu import Ok, Result
+from telegrinder.node import UserId
 from derivelib import derive
 from derivelib._errors import DomainError
+
 from teleflow.app import TGApp
 from teleflow.flow import TextInput, Counter, FinishResult
 
-# 1. Создаём приложение
 tg = TGApp(key_node=UserId)
 
-
-# 2. Объявляем flow
-@derive(tg.flow("register", description="Регистрация"))
+@derive(tg.flow("greet", description="Приветствие"))
 @dataclass
-class Registration:
+class Greeting:
     name: Annotated[str, TextInput("Как вас зовут?")]
     age: Annotated[int, Counter("Сколько вам лет?", min=1, max=120)]
 
     async def finish(self) -> Result[FinishResult, DomainError]:
-        return Ok(FinishResult.message(f"Добро пожаловать, {self.name}!"))
+        return Ok(FinishResult.message(f"Привет, {self.name}! {self.age} — отличный возраст."))
 ```
 
-Когда пользователь отправляет `/register`, бот проведёт его через два шага — текстовый ввод имени и счётчик +/- для возраста — затем вызовет `finish()`.
+Когда пользователь отправляет `/greet`, бот спрашивает "Как вас зовут?" и ждёт ответа. Пользователь отвечает текстом — это становится `self.name`. Затем бот показывает `+`/`-` счётчик для возраста. После заполнения обоих полей вызывается `finish()` и отправляется сообщение.
 
-## Компиляция в Dispatch
+`TGApp` — координатор. Он владеет всеми паттернами, следит за уникальностью команд и разделяет тему и реестр колбэков между всем.
 
-Паттерны teleflow компилируются в telegrinder `Dispatch` через wire-компилятор emergent:
+## Добавляем browse
 
-```python
-from emergent.wire.axis.surface._app import build_application_from_decorated
-from telegrinder import API, Telegrinder
-
-# Собираем wire-приложение из всех @derive-декорированных классов
-app = build_application_from_decorated(Registration)
-
-# Компилируем в telegrinder Dispatch
-dp = tg.compile(app)
-
-# Запускаем бота
-bot = Telegrinder(API(token="BOT_TOKEN"), dispatch=dp)
-bot.run_forever()
-```
-
-## Добавляем browse-представление
-
-Покажите пользователям список сущностей с пагинацией:
+Flows собирают данные. **Browse** отображает их. Вот пагинированный список с кнопками действий:
 
 ```python
-from teleflow.browse import BrowseSource, query, action, ActionResult
+from emergent.wire.axis.schema import Identity
+from teleflow.browse import ListBrowseSource, BrowseSource, ActionResult, query, action, format_card
 
-@derive(tg.browse("tasks", description="Мои задачи"))
+@derive(tg.browse("items", page_size=3, description="Элементы"))
 @dataclass
-class TaskCard:
+class ItemCard:
     id: Annotated[int, Identity]
     title: str
     done: bool
 
     @classmethod
     @query
-    async def fetch(cls, db: TaskDB) -> BrowseSource[TaskCard]:
-        return ListBrowseSource(await db.all())
+    async def fetch(cls) -> BrowseSource[ItemCard]:
+        return ListBrowseSource([
+            ItemCard(1, "Написать документацию", False),
+            ItemCard(2, "Выпустить v1", False),
+        ])
+
+    @classmethod
+    @format_card
+    def render(cls, item: ItemCard) -> str:
+        icon = "готово" if item.done else "в работе"
+        return f"[{icon}] {item.title}"
 
     @classmethod
     @action("Завершить")
-    async def complete(cls, entity: TaskCard, db: TaskDB) -> ActionResult:
-        await db.mark_done(entity.id)
-        return ActionResult.refresh("Готово!")
+    async def complete(cls, item: ItemCard) -> ActionResult:
+        return ActionResult.refresh(f"Завершено: {item.title}")
 ```
 
-`/tasks` показывает список карточек с навигацией prev/next и кнопкой «Завершить» на каждой карточке.
+`/items` показывает первую страницу карточек с кнопками пагинации и действием «Завершить» на каждой. Поле `id` с аннотацией `Identity` указывает teleflow, какое поле уникально идентифицирует сущность.
+
+## Компиляция и запуск
+
+Паттерны teleflow не создают обработчики напрямую. Они описывают **application** — переносимое представление, которое компилируется под конкретный рантайм. Для Telegram этот рантайм — telegrinder:
+
+```python
+from derivelib import build_application_from_decorated
+from telegrinder import API, Telegrinder, Token
+from emergent.wire.compile.targets import telegrinder as tg_compile
+
+# Собираем все @derive-классы в wire application
+app = build_application_from_decorated(Greeting, ItemCard)
+
+# Компилируем в telegrinder Dispatch
+dp = tg_compile.compile(app)
+
+# Запускаем
+bot = Telegrinder(API(Token("YOUR_BOT_TOKEN")), dispatch=dp)
+bot.run_forever()
+```
+
+Этот двухэтапный процесс (собрать application, скомпилировать) — ключ архитектуры emergent. Application не зависит от цели — те же `@derive`-объявления могут компилироваться в HTTP или CLI. Для teleflow цель всегда telegrinder.
 
 ## Что дальше
 
-- [Flows и виджеты](flows.md) — все типы виджетов, валидация, динамические опции
-- [Browse, Dashboard и Search](views.md) — представления сущностей
-- [Settings](settings.md) — редактирование настроек
-- [Трансформы](transforms.md) — отмена, назад, прогресс, вложенные flow
-- [Темизация](theming.md) — настройка строк и иконок
+Вы познакомились с двумя основными паттернами — flow для сбора данных и browse для их отображения. В teleflow ещё три паттерна (dashboard, settings, search) и богатая библиотека виджетов. Продолжайте:
+
+**Далее: [Flows и виджеты](flows.md)** — полный каталог виджетов, валидация, условные поля и кастомные виджеты
+
+---
+
+[Оглавление](readme.md)

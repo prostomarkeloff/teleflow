@@ -1,11 +1,26 @@
 # Settings
 
-`tg_settings()` generates a settings panel where users tap fields to edit them inline using flow widgets.
+Every bot has settings — language preference, notification toggles, default values. teleflow's settings pattern gives users an overview of their current choices and lets them edit any field inline, using the same widgets that power flows.
+
+## How settings work
+
+The settings pattern has two modes. **Overview mode** shows all fields as a summary with a button for each:
+
+```
+Nickname: Alice
+Volume: 70
+Dark mode: On
+
+[Nickname: Alice]  [Volume: 70]  [Dark mode: On]
+```
+
+When the user taps a button, the view flips to **editing mode** — the field's widget renders inline (a text prompt, a counter, a toggle — whatever you annotated). After editing, `@on_save` fires, and the view returns to overview with the updated value.
 
 ## Declaring settings
 
 ```python
 from teleflow.settings import tg_settings, on_save, format_settings
+from teleflow.browse import query
 from teleflow.flow import TextInput, Counter, Toggle
 
 @derive(tg.settings("config", description="Bot settings"))
@@ -17,72 +32,55 @@ class BotConfig:
 
     @classmethod
     @query
-    async def fetch(cls, uid: UserId, db: ConfigDB) -> BotConfig:
-        return await db.get(uid.value)
+    async def fetch(cls, uid: Annotated[int, compose.Node(UserId)],
+                    db: ConfigDB) -> BotConfig:
+        return await db.get(uid)
 
     @classmethod
     @on_save
-    async def save(cls, settings: BotConfig, uid: UserId, db: ConfigDB) -> None:
-        await db.update(uid.value, settings)
+    async def save(cls, settings: BotConfig, uid: Annotated[int, compose.Node(UserId)],
+                   db: ConfigDB) -> None:
+        await db.update(uid, settings)
+
+    @classmethod
+    @format_settings
+    def render(cls, s: BotConfig) -> str:
+        return f"Nickname: {s.nickname}\nVolume: {s.volume}%\nDark mode: {'On' if s.dark_mode else 'Off'}"
 ```
 
-When the user sends `/config`, they see an overview of current values with a button per field. Tapping a field opens the corresponding widget inline. After editing, `@on_save` persists the change.
+Three decorators, each with a clear role:
 
-## How it works
+### @query — load current values
 
-The settings pattern has two modes:
-
-**Overview mode** — shows all fields as buttons:
-```
-Nickname: Alice
-Volume: 70
-Dark mode: On
-
-[Nickname: Alice]  [Volume: 70]  [Dark mode: On]
-```
-
-**Editing mode** — renders the field's widget:
-```
-Volume:
-   ← 70 →
-[Done]  [Back]
-```
-
-Pressing Back returns to overview. Completing a widget edit triggers `@on_save` and returns to overview with the updated value.
-
-## Decorators
-
-### @query
-
-Loads the current settings. Returns the settings dataclass instance (not a BrowseSource).
+Returns the settings dataclass populated with current values. Just like in browse, it supports DI for accessing databases and the current user.
 
 ```python
 @classmethod
 @query
-async def fetch(cls, uid: UserId, db: ConfigDB) -> BotConfig:
-    return await db.get(uid.value)
+async def fetch(cls, uid: Annotated[int, compose.Node(UserId)]) -> BotConfig:
+    ...
 ```
 
-### @on_save
+### @on_save — persist changes
 
-Called after a field is edited. Receives the full settings object with the updated field.
+Called every time the user edits a field. Receives the full settings object with the updated field already applied.
 
 ```python
 @classmethod
 @on_save
-async def save(cls, settings: BotConfig, uid: UserId, db: ConfigDB) -> None:
-    await db.update(uid.value, settings)
+async def save(cls, settings: BotConfig, uid: Annotated[int, compose.Node(UserId)]) -> None:
+    ...
 ```
 
-### @format_settings
+### @format_settings — custom overview text
 
-Optional custom renderer for the overview display.
+Optional. Controls what the user sees in overview mode. Without it, teleflow renders all fields as `field: value` lines.
 
 ```python
 @classmethod
 @format_settings
 def render(cls, s: BotConfig) -> str:
-    return f"Nickname: {s.nickname}\nVolume: {s.volume}%"
+    return f"Nickname: {s.nickname}\n..."
 ```
 
 ## Parameters
@@ -90,12 +88,15 @@ def render(cls, s: BotConfig) -> str:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `command` | `str` | required | Telegram command |
-| `key_node` | `type` | required | nodnod session routing node |
-| `*caps` | `SurfaceCapability` | `()` | Additional capabilities |
 | `description` | `str \| None` | `None` | Help text |
-| `order` | `int` | `100` | Sort order in help |
-| `theme` | `UITheme` | default | UI customization |
+| `order` | `int` | `100` | Sort position in help |
 
 ## Widget reuse
 
-Settings reuses the same widgets as flows. Any widget that works in a flow field annotation works in a settings field — TextInput, Counter, Toggle, Inline, Multiselect, DatePicker, etc.
+This is the key insight: settings reuses flow widgets. Annotate a field with `TextInput`, `Counter`, `Toggle`, `Inline`, `DatePicker` — any widget from [Flows & Widgets](flows.md) works. When the user taps a settings field, that widget renders as an inline editor. No separate widget system, no duplication.
+
+---
+
+**Prev: [Views](views.md)** | **Next: [Transforms](transforms.md)**
+
+[Docs index](readme.md)

@@ -1,11 +1,26 @@
 # Settings
 
-`tg_settings()` генерирует панель настроек, где пользователи нажимают на поля для инлайн-редактирования через виджеты flow.
+У каждого бота есть настройки — выбор языка, переключатели уведомлений, значения по умолчанию. Паттерн settings даёт пользователям обзор текущих значений и позволяет редактировать любое поле инлайн, используя те же виджеты, что и в flows.
 
-## Объявление настроек
+## Как работают settings
+
+У паттерна два режима. **Режим обзора** показывает все поля как сводку с кнопкой на каждое:
+
+```
+Никнейм: Alice
+Громкость: 70
+Тёмная тема: Вкл
+
+[Никнейм: Alice]  [Громкость: 70]  [Тёмная тема: Вкл]
+```
+
+Когда пользователь нажимает кнопку, вид переключается в **режим редактирования** — виджет поля отрисовывается инлайн (текстовый промпт, счётчик, переключатель — всё, что вы аннотировали). После редактирования срабатывает `@on_save`, и вид возвращается к обзору с обновлённым значением.
+
+## Объявление settings
 
 ```python
 from teleflow.settings import tg_settings, on_save, format_settings
+from teleflow.browse import query
 from teleflow.flow import TextInput, Counter, Toggle
 
 @derive(tg.settings("config", description="Настройки бота"))
@@ -17,85 +32,71 @@ class BotConfig:
 
     @classmethod
     @query
-    async def fetch(cls, uid: UserId, db: ConfigDB) -> BotConfig:
-        return await db.get(uid.value)
+    async def fetch(cls, uid: Annotated[int, compose.Node(UserId)],
+                    db: ConfigDB) -> BotConfig:
+        return await db.get(uid)
 
     @classmethod
     @on_save
-    async def save(cls, settings: BotConfig, uid: UserId, db: ConfigDB) -> None:
-        await db.update(uid.value, settings)
+    async def save(cls, settings: BotConfig, uid: Annotated[int, compose.Node(UserId)],
+                   db: ConfigDB) -> None:
+        await db.update(uid, settings)
+
+    @classmethod
+    @format_settings
+    def render(cls, s: BotConfig) -> str:
+        return f"Никнейм: {s.nickname}\nГромкость: {s.volume}%\nТёмная тема: {'Вкл' if s.dark_mode else 'Выкл'}"
 ```
 
-При отправке `/config` пользователь видит обзор текущих значений с кнопкой на каждое поле. Нажатие открывает соответствующий виджет. После редактирования вызывается `@on_save`.
+Три декоратора, каждый с чёткой ролью:
 
-## Как это работает
+### @query — загрузка текущих значений
 
-У паттерна settings два режима:
-
-**Обзорный режим** — показывает все поля как кнопки:
-```
-Никнейм: Alice
-Громкость: 70
-Тёмная тема: Вкл
-
-[Никнейм: Alice]  [Громкость: 70]  [Тёмная тема: Вкл]
-```
-
-**Режим редактирования** — рендерит виджет поля:
-```
-Громкость:
-   ← 70 →
-[Готово]  [Назад]
-```
-
-Кнопка «Назад» возвращает к обзору. Завершение редактирования вызывает `@on_save` и возвращает к обзору с обновлённым значением.
-
-## Декораторы
-
-### @query
-
-Загружает текущие настройки. Возвращает экземпляр датакласса.
+Возвращает датакласс настроек с текущими значениями. Как в browse, поддерживает DI для доступа к базам и текущему пользователю.
 
 ```python
 @classmethod
 @query
-async def fetch(cls, uid: UserId, db: ConfigDB) -> BotConfig:
-    return await db.get(uid.value)
+async def fetch(cls, uid: Annotated[int, compose.Node(UserId)]) -> BotConfig:
+    ...
 ```
 
-### @on_save
+### @on_save — сохранение изменений
 
-Вызывается после редактирования поля. Получает полный объект настроек с обновлённым полем.
+Вызывается каждый раз, когда пользователь редактирует поле. Получает полный объект настроек с уже применённым обновлением.
 
 ```python
 @classmethod
 @on_save
-async def save(cls, settings: BotConfig, uid: UserId, db: ConfigDB) -> None:
-    await db.update(uid.value, settings)
+async def save(cls, settings: BotConfig, uid: Annotated[int, compose.Node(UserId)]) -> None:
+    ...
 ```
 
-### @format_settings
+### @format_settings — кастомный обзор
 
-Опциональный кастомный рендерер обзора.
+Опционален. Контролирует, что пользователь видит в режиме обзора. Без него teleflow рендерит все поля как `поле: значение`.
 
 ```python
 @classmethod
 @format_settings
 def render(cls, s: BotConfig) -> str:
-    return f"Никнейм: {s.nickname}\nГромкость: {s.volume}%"
+    return f"Никнейм: {s.nickname}\n..."
 ```
 
 ## Параметры
 
-| Параметр | Тип | По умолчанию | Описание |
-|----------|-----|-------------|----------|
+| Параметр | Тип | Значение | Описание |
+|----------|-----|----------|----------|
 | `command` | `str` | обязателен | Команда Telegram |
-| `key_node` | `type` | обязателен | nodnod-нода для маршрутизации |
-| `*caps` | `SurfaceCapability` | `()` | Дополнительные capabilities |
 | `description` | `str \| None` | `None` | Текст для help |
-| `order` | `int` | `100` | Порядок в help |
-| `theme` | `UITheme` | default | Настройка UI |
+| `order` | `int` | `100` | Позиция в help |
 
 ## Переиспользование виджетов
 
-Settings переиспользует те же виджеты, что и flows. Любой виджет из flow-аннотации работает в settings — TextInput, Counter, Toggle, Inline, Multiselect, DatePicker и т.д.
+Ключевой момент: settings переиспользует виджеты из flow. Аннотируйте поле с `TextInput`, `Counter`, `Toggle`, `Inline`, `DatePicker` — любой виджет из [Flows и виджеты](flows.md) работает. При нажатии на поле настроек виджет отрисовывается как инлайн-редактор. Никакой отдельной системы виджетов, никакого дублирования.
+
+---
+
+**Назад: [Представления](views.md)** | **Далее: [Трансформы](transforms.md)**
+
+[Оглавление](readme.md)
